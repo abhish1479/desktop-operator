@@ -1,0 +1,22 @@
+{
+  "name": "desktop-operator-bridge",
+  "displayName": "Desktop Operator Bridge",
+  "description": "Expose save/diagnostics over localhost for AI Operator",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.84.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": { "commands": [
+    { "command": "desktopOperator.saveAll", "title": "Desktop Operator: Save All" },
+    { "command": "desktopOperator.showStatus", "title": "Desktop Operator: Show Status" }
+  ]},
+  "scripts": {
+    "compile": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.84.0",
+    "typescript": "^5.3.3"
+  },
+  "publisher": "you"
+}

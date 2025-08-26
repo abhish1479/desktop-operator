@@ -1,0 +1,23 @@
+terminal:
+  whitelist:
+    - '^git\s'
+    - '^python(\s|$)'
+    - '^pip(\s|$)'
+    - '^pwsh(\s|$)'
+    - '^winget(\s|$)'
+    - '^choco(\s|$)'
+    - '^npm(\s|$)'
+    - '^pnpm(\s|$)'
+    - '^node(\s|$)'
+    - '^pytest(\s|$)'
+    - '^dir(\s|$)|^ls(\s|$)'
+  denylist:
+    - 'rm\s-\-no-preserve-root'
+    - 'rm\s-?rf\s/'
+    - 'format\s'
+    - 'shutdown\s'
+    - 'del\s[\w\W]+'
+
+limits:
+  max_steps: 40
+  max_minutes: 20

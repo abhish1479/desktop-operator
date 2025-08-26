@@ -1,0 +1,17 @@
+fastapi==0.112.0
+uvicorn==0.30.5
+pydantic==2.8.2
+python-dotenv==1.0.1
+requests==2.32.3
+loguru==0.7.2
+psutil==6.0.0
+
+# Desktop / RPA
+pyautogui==0.9.54
+opencv-python==4.10.0.84
+pytesseract==0.3.13
+Pillow==10.4.0
+pywinauto==0.6.8; platform_system == "Windows"
+
+# Browser automation
+playwright==1.46.0
