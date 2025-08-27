@@ -1,0 +1,13 @@
+name: "files.organize"
+version: "v1"
+description: "Organize files in a directory by extension or pattern."
+risk: "medium"
+capabilities:
+  - filesystem.write
+  - filesystem.move
+guards:
+  max_affected_files: 500
+  require_approval_if:
+    - action: "delete"
+inputs:
+  schema: "./schema.json"

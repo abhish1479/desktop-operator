@@ -8,6 +8,18 @@ from ...worker.ui_automation import window_focus, ui_click, ui_type, ui_menu_sel
 
 from ...worker.app_launch import launch as app_launch_launch
 
+from ..policy import policy
+
+def _ensure_path_allowed(path: str):
+    ok, reason = policy.sandbox_guard(path)
+    if not ok:
+        raise PermissionError(reason)
+
+def _ensure_exec_allowed(bin_name: str, args: list[str]):
+    ok, reason = policy.is_exec_allowed(bin_name, args)
+    if not ok:
+        raise PermissionError(reason)
+
 async def app_launch(name: str) -> dict:
     return app_launch_launch(name)
 

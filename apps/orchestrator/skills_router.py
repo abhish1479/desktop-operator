@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
+from .validation import validate_input
+from .policy import policy
 
 from ..worker.filesystem import ensure_dir
 from ..worker.skills.files_organize import run as files_organize_run
@@ -48,3 +50,28 @@ async def whatsapp_chat(req: WhatsappChatReq):
         duration_sec=req.duration_sec,
         allow_llm=req.allow_llm,
     )
+
+@router.post("/{tool}/run")
+def run_tool(tool: str, payload: dict):
+    # 1) JSON Schema validation
+    try:
+        validate_input(tool, payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # 2) Apply defaults from policy
+    defaults = policy.defaults()
+    for k, v in defaults.items():
+        payload.setdefault(k, v)
+
+    # 3) Extra policy checks for known tools
+    caps = policy.tool_caps(tool)
+    if tool == "files.organize":
+        if not payload.get("dry_run", True) and not caps.get("allow_delete", False):
+            # If any rule has delete, require approval
+            if any(r.get("action") == "delete" for r in payload.get("rules", [])):
+                if policy.require_approval("destructive"):
+                    raise HTTPException(403, "Delete requires approval")
+
+    # 4) Dispatch (call your existing implementation)
+    return _dispatch_tool(tool, payload)

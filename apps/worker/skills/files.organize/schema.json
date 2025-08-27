@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "files.organize.v1",
+  "type": "object",
+  "required": ["root", "rules"],
+  "properties": {
+    "root": { "type": "string", "minLength": 1 },
+    "dry_run": { "type": "boolean", "default": true },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "when_ext": { "type": "array", "items": { "type": "string" } },
+          "when_glob": { "type": "string" },
+          "action": { "type": "string", "enum": ["move", "copy", "delete"] },
+          "to": { "type": "string" }
+        },
+        "allOf": [
+          { "if": { "properties": { "action": { "const": "move" } } }, "then": { "required": ["to"] } },
+          { "if": { "properties": { "action": { "const": "copy" } } }, "then": { "required": ["to"] } }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+<!doctype html>
+title: "WhatsApp Web: send a timestamped note to yourself",
+text: `Open WhatsApp Web in the browser (use persistent profile 'default' so the session remains logged in). Search for the 'You' or 'Notes to self' chat and send the message: "Test ping from Desktop Operator at {now}". If not logged in, pause and ask me to scan the QR. Take a screenshot of the sent message thread and save to data/screens/.`
+},
+{
+title: "Create a new FastAPI project in a sandbox path",
+text: `Create a project at C:\\AutomationSpace\\Projects\\FabzieAdAnalytics. Initialize a Python venv, install fastapi and uvicorn[standard], create app/main.py with a Hello route, generate a README.md, and run the dev server on port 8100. Use only the sandbox path and record each step in the journal. When done, stop the server.`
+},
+{
+title: "Browser RPA: research and download",
+text: `In a headful browser, navigate to https://www.python.org/downloads/ and take a full-page screenshot. Then navigate to the latest Python 3.x download page and trigger the Windows installer download to data/downloads/ using the browser's download helper. Provide the saved file path in the result.`
+},
+{
+title: "Install vetted packages with approval",
+text: `Using the allowed package manager and policy constraints, propose installing Git and Visual Studio Code via winget. Show a dry-run plan first. Ask for approval before executing. After install, verify versions (git --version, code --version) and log outputs. If install is blocked by policy, return the exact guardrails reason.`
+},
+{
+title: "Organize Downloads by extension",
+text: `Organize files under C:\\AutomationSpace\\Downloads: move .jpg/.png to Pictures/, .zip/.msi/.exe to Installers/, .pdf to Documents/. Use dry-run first, show a summary of planned moves, then ask me to confirm before executing. Provide an undo op_id I can call later.`
+},
+{
+title: "VS Code workspace setup",
+text: `Open folder C:\\AutomationSpace\\Projects\\FabzieAdAnalytics in VS Code (via the bridge). Create src/, tests/, and a .vscode/settings.json with Python formatting enabled. Create a sample test file and run formatting. Then request diagnostics and display any problems.`
+},
+{
+title: "Web form automation (demo site)",
+text: `Open https://httpbin.org/forms/post, fill the form with sample values, submit, and capture the resulting page as a screenshot saved to data/screens/.`
+},
+{
+title: "Shopify bulk upload (skeleton)",
+text: `Prepare a skeleton CSV for Shopify product bulk upload with 3 sample rows (Ganesh Idol, Tiger Figurine, Elephant Figurine). Save to C:\\AutomationSpace\\Shopify\\products.csv and open the folder in Explorer. (This is a local file prep step only; do not upload.)`
+},
+{
+title: "Mixed flow: download -> organize -> verify",
+text: `Download the latest release archive of the 'requests' library from https://pypi.org/project/requests/#files to data/downloads/. Then organize the downloads folder with proper subfolders by extension (dry run), show summary, and provide a screenshot of the folder before and after (if not dry-run).`
+},
+{
+title: "Create a daily journal file",
+text: `Create a Markdown journal file under C:\\AutomationSpace\\Notes\\journal-{YYYY}-{MM}-{DD}.md with a header, a TODO list section, and an empty Log section. Open it in VS Code and format the document.`
+}
+];
+
+
+const exList = document.getElementById('examples');
+examples.forEach((ex, i) => {
+const li = document.createElement('li');
+li.className = 'rounded-lg bg-slate-800/60 border border-slate-700 p-3 flex justify-between items-center';
+li.innerHTML = `<span class="pr-4">${ex.title}</span><button class="text-indigo-300 hover:text-indigo-200 underline" data-i="${i}">Insert</button>`;
+li.querySelector('button').addEventListener('click', (e) => {
+document.getElementById('prompt').value = examples[e.target.dataset.i].text;
+});
+exList.appendChild(li);
+});
+
+
+const $ = (id) => document.getElementById(id);
+const out = $('out');
+const status = $('status');
+
+
+$('run').addEventListener('click', async () => {
+const goal = $('prompt').value.trim();
+if (!goal) { alert('Enter a prompt'); return; }
+
+
+status.textContent = 'Running…';
+out.textContent = '';
+
+
+const body = { goal };
+// If your /tasks/run accepts options, you can include them:
+try { body.options = { dry_run: $('dry').checked, profile: $('profile').value, max_steps: Number($('steps').value || 30) }; } catch {}
+
+
+try {
+const resp = await fetch('/tasks/run', {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify(body)
+});
+const json = await resp.json();
+status.textContent = `Status: ${resp.status}`;
+out.textContent = JSON.stringify(json, null, 2);
+} catch (e) {
+status.textContent = 'Error';
+out.textContent = String(e);
+}
+});
+</script>
+</body>
+</html>
