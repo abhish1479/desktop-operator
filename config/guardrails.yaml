@@ -11,6 +11,10 @@ terminal:
     - '^node(\s|$)'
     - '^pytest(\s|$)'
     - '^dir(\s|$)|^ls(\s|$)'
+    - '^start\\s'
+    - '^Start-Process(\\s|$)'
+    - '^explorer(\\s|$)'
+    
   denylist:
     - 'rm\s-\-no-preserve-root'
     - 'rm\s-?rf\s/'
@@ -21,3 +25,9 @@ terminal:
 limits:
   max_steps: 40
   max_minutes: 20
+
+
+autopilot:
+  file_organize:
+    require_approval_first_time: true
+    max_moves_without_prompt: 200

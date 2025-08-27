@@ -6,6 +6,10 @@ from .llm import LLM
 from .policy import Guardrails
 from .tools.registry import TOOL_REGISTRY
 from .skills_router import router as skills_router
+import sys, asyncio
+from fastapi import APIRouter
+test_router = APIRouter()
+
 
 app = FastAPI(title="Desktop Operator Orchestrator", version="0.1.0")
 app.include_router(skills_router, prefix="/skills", tags=["skills"])
@@ -56,4 +60,28 @@ async def run_task(req: TaskRequest):
         if guard.time_budget_exceeded():
             break
 
+
+        if sys.platform.startswith("win"):
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            except Exception:
+                pass
+
+    
     return {"ok": True, "steps": steps}
+
+@test_router.get("/debug/playwright")
+async def debug_playwright():
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto("https://example.com")
+            title = await page.title()
+            await browser.close()
+        return {"ok": True, "title": title}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+app.include_router(test_router)

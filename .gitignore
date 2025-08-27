@@ -1,0 +1,104 @@
+# ------------------------
+# Python
+# ------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.log
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+*.env  # dotenv secrets
+.env/venv/ 
+.env.*
+.env
+
+# Byte-compiled / C extensions
+*.so
+*.dll
+*.dylib
+
+# Build / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing / coverage
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.tox/
+
+# ------------------------
+# FastAPI / Uvicorn
+# ------------------------
+# reload artifacts
+*.pid
+
+# ------------------------
+# Playwright
+# ------------------------
+/playwright-report/
+/test-results/
+/playwright/.cache/
+/. playwright/  # in case hidden cache
+
+# Chromium / Firefox / Webkit binaries installed by Playwright
+**/ms-playwright/
+
+# ------------------------
+# Editors / IDE
+# ------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.bak
+
+# ------------------------
+# OS-specific
+# ------------------------
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# ------------------------
+# Project-specific
+# ------------------------
+logs/
+tmp/
+output/

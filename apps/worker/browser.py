@@ -1,45 +1,52 @@
 import asyncio, os
-from playwright.async_api import async_playwright
+# apps/worker/browser.py  (sync API wrapped for async callers)
+import concurrent.futures
+from functools import lru_cache
+from playwright.sync_api import sync_playwright
 
-_browser_singleton = {"browser": None, "context": None, "page": None}
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-async def _ensure_page():
-    if _browser_singleton["page"]:
-        return _browser_singleton["page"]
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=False)
-    context = await browser.new_context(accept_downloads=True)
-    page = await context.new_page()
-    _browser_singleton.update({"browser": browser, "context": context, "page": page})
-    return page
+@lru_cache(maxsize=1)
+def _get_playwright():
+    # Starting sync Playwright once; reused in the thread
+    pw = sync_playwright().start()
+    ctx = pw.chromium.launch(headless=False)
+    page = ctx.new_page()
+    return pw, ctx, page
 
+def _nav(url: str) -> dict:
+    try:
+        pw, ctx, page = _get_playwright()
+        page.goto(url)
+        return {"ok": True, "url": url, "title": page.title()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def _click(selector: str, name: str | None = None) -> dict:
+    try:
+        _, _, page = _get_playwright()
+        page.click(selector)
+        return {"ok": True, "selector": selector, "name": name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def _type(selector: str, text: str, press_enter: bool = False) -> dict:
+    try:
+        _, _, page = _get_playwright()
+        page.fill(selector, "")  # ensure clean
+        page.type(selector, text)
+        if press_enter:
+            page.keyboard.press("Enter")
+        return {"ok": True, "selector": selector, "typed": len(text)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# ---- async wrappers used by tools.registry ----
 async def browser_nav(url: str) -> dict:
-    page = await _ensure_page()
-    await page.goto(url)
-    return {"ok": True, "url": url}
+    return await asyncio.get_running_loop().run_in_executor(_executor, _nav, url)
 
 async def browser_click(selector: str, by: str = "css", name: str | None = None) -> dict:
-    page = await _ensure_page()
-    if by == "role" and name:
-        await page.get_by_role(selector, name=name).click()
-    else:
-        await page.click(selector)
-    return {"ok": True, "selector": selector}
+    return await asyncio.get_running_loop().run_in_executor(_executor, _click, selector, name)
 
 async def browser_type(selector: str, text: str, press_enter: bool = False) -> dict:
-    page = await _ensure_page()
-    await page.fill(selector, text)
-    if press_enter:
-        await page.keyboard.press("Enter")
-    return {"ok": True, "selector": selector, "typed": len(text)}
-
-async def browser_download(selector: str, to_dir: str) -> dict:
-    page = await _ensure_page()
-    async with page.expect_download() as dl_info:
-        await page.click(selector)
-    download = await dl_info.value
-    path = await download.path()
-    os.makedirs(to_dir, exist_ok=True)
-    saved = os.path.join(to_dir, download.suggested_filename)
-    await download.save_as(saved)
-    return {"ok": True, "saved": saved}
+    return await asyncio.get_running_loop().run_in_executor(_executor, _type, selector, text, press_enter)

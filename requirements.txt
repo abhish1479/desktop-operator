@@ -15,3 +15,4 @@ pywinauto==0.6.8; platform_system == "Windows"
 
 # Browser automation
 playwright==1.46.0
+PyYAML==6.0.2

@@ -4,6 +4,12 @@ from ...worker.filesystem import write_text, move_path, listdir_path
 from ...worker.terminal import run_cmd
 from ...worker.vscode_bridge import vscode_open, vscode_save_all, vscode_get_diagnostics
 from ...worker.browser import browser_nav, browser_click, browser_type, browser_download
+from ...worker.ui_automation import window_focus, ui_click, ui_type, ui_menu_select
+
+from ...worker.app_launch import launch as app_launch_launch
+
+async def app_launch(name: str) -> dict:
+    return app_launch_launch(name)
 
 async def fs_write(path: str, content: str) -> dict:
     return write_text(path, content)
@@ -37,6 +43,24 @@ async def browser_type_wrapper(selector: str, text: str, press_enter: bool = Fal
 
 async def browser_download_wrapper(selector: str, to_dir: str) -> dict:
     return await browser_download(selector, to_dir)
+async def ui_focus(title_re: str) -> dict:
+    return window_focus(title_re)
+
+async def ui_click_wrapper(name: str, control_type: str="Button") -> dict:
+    return ui_click(name, control_type)
+
+async def ui_type_wrapper(text: str) -> dict:
+    return ui_type(text)
+
+async def ui_menu_wrapper(path: str) -> dict:
+    return ui_menu_select(path)
+
+from ...worker.browser import browser_nav_with_profile, browser_wait_ms
+async def browser_nav_profile(url: str, user_data_dir: str) -> dict: 
+    return await browser_nav_with_profile(url, user_data_dir)
+async def browser_wait(ms: int=60000) -> dict: 
+    return await browser_wait_ms(ms)
+
 
 TOOL_REGISTRY: Dict[str, Callable[..., Awaitable[dict]]] = {
     "fs_write": fs_write,
@@ -50,4 +74,13 @@ TOOL_REGISTRY: Dict[str, Callable[..., Awaitable[dict]]] = {
     "browser_click": browser_click_wrapper,
     "browser_type": browser_type_wrapper,
     "browser_download": browser_download_wrapper,
+    "browser_nav_profile": browser_nav_profile,
+    "browser_wait": browser_wait,
+    "ui_focus": ui_focus,
+    "ui_click": ui_click_wrapper,
+    "ui_type": ui_type_wrapper,
+    "ui_menu_select": ui_menu_wrapper,
+    "app_launch": app_launch,
+    
+
 }
