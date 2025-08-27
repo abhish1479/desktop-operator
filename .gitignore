@@ -18,6 +18,14 @@ ENV/
 .env.*
 .env
 
+# Virtual environment
+.env-venv/
+venv/
+env/
+ENV/
+.venv/
+
+
 # Byte-compiled / C extensions
 *.so
 *.dll
