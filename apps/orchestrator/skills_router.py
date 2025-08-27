@@ -16,6 +16,10 @@ from ..worker.filesystem import ensure_dir
 from ..worker.skills.files_organize import run as files_organize_run
 from ..worker.skills.shopify_bulk import run as shopify_bulk_run
 from ..worker.skills.whatsapp_chat import run_chat
+from fastapi import Request
+from ..worker.skills.whatsapp_desktop_chat import run_desktop_chat
+from fastapi import Request
+
 
 # Prefix so paths are /skills/...
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -55,6 +59,78 @@ async def whatsapp_chat(req: WhatsappChatReq):
         initial_message=req.initial_message,
         duration_sec=req.duration_sec,
         allow_llm=req.allow_llm,
+    )
+
+# class WhatsappDesktopReq(BaseModel):
+#     contact: str
+#     initial_message: str | None = None
+#     duration_sec: int = 120
+#     allow_llm: bool = True
+#     # existing knobs you added earlier...
+#     system_prompt: str | None = None
+#     topic: str | None = None
+#     style: str | None = None
+#     max_words: int = 40
+#     emoji_ok: bool = True
+#     # NEW:
+#     allow_ocr: bool = False
+
+
+class WhatsappDesktopReq(BaseModel):
+    contact: str | None = None
+    phone_e164: str | None = None
+    initial_message: str | None = None
+    duration_sec: int = 120
+    allow_llm: bool = True
+    system_prompt: str | None = None
+    topic: str | None = None
+    style: str | None = None
+    max_words: int = 40
+    emoji_ok: bool = True
+    allow_ocr: bool = False
+    contact_exact: bool = True
+    safe_mode: bool = True
+    strict_llm: bool = True   # <-- NEW (LLM-only messages when true)
+
+
+@router.post("/whatsapp.desktop_chat/run")
+def whatsapp_desktop_chat(req: WhatsappDesktopReq, request: Request):
+    llm = getattr(request.app.state, "llm", None)
+    return run_desktop_chat(
+        contact=req.contact,
+        phone_e164=req.phone_e164,
+        initial_message=req.initial_message,
+        duration_sec=req.duration_sec,
+        allow_llm=req.allow_llm,
+        llm=llm,
+        system_prompt=req.system_prompt,
+        topic=req.topic,
+        style=req.style,
+        max_words=req.max_words,
+        emoji_ok=req.emoji_ok,
+        allow_ocr=req.allow_ocr,
+        contact_exact=req.contact_exact,
+        safe_mode=req.safe_mode,
+        strict_llm=req.strict_llm,   # <-- pass it along
+    )
+
+def whatsapp_desktop_chat(req: WhatsappDesktopReq, request: Request):
+    llm = getattr(request.app.state, "llm", None)
+    return run_desktop_chat(
+        contact=req.contact or "",
+        phone_e164=req.phone_e164,
+        initial_message=req.initial_message,
+        duration_sec=req.duration_sec,
+        allow_llm=req.allow_llm,
+        llm=llm,
+        system_prompt=req.system_prompt,
+        topic=req.topic,
+        style=req.style,
+        max_words=req.max_words,
+        emoji_ok=req.emoji_ok,
+        allow_ocr=req.allow_ocr,
+        contact_exact=req.contact_exact,
+        safe_mode=req.safe_mode,
     )
 
 # -------------------- Generic dispatcher (for any TOOL_REGISTRY tools) --------------------
