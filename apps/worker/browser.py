@@ -1,176 +1,179 @@
 # apps/worker/browser.py
-from pathlib import Path
-from contextlib import contextmanager
-from typing import Optional
-import time
+from __future__ import annotations
+import os, asyncio, pathlib, hashlib
+from typing import Tuple, Optional, Dict, Any
+from playwright.async_api import async_playwright, BrowserContext, Playwright, Page
+from playwright.async_api import async_playwright, BrowserContext, Playwright, Page
+from typing import Optional, Dict, Any
+from urllib.parse import urlparse
+from playwright.async_api import Download
+# keep one persistent context per profile on disk
+_CTX: dict[str, Tuple[Playwright, BrowserContext]] = {}
 
-from playwright.sync_api import sync_playwright, BrowserContext, Page
-
-PROFILE_ROOT = Path("data/playwright-profiles")
-PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
-DOWNLOAD_DIR = Path("data/downloads")
-DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-SCREEN_DIR = Path("data/screens")
-SCREEN_DIR.mkdir(parents=True, exist_ok=True)
-
-@contextmanager
-def _ctx(profile: str = "default", headless: bool = False, accept_downloads: bool = True) -> BrowserContext:
-    """
-    Persistent Chromium context so logins/cookies stick across calls.
-    """
-    from playwright.sync_api import Error as PWError  # avoid import error if playwright not installed
-    PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
-    user_data_dir = PROFILE_ROOT / profile
-    user_data_dir.mkdir(parents=True, exist_ok=True)
-
-    pw = sync_playwright().start()
-    # launch_persistent_context gives us a Context directly
-    ctx = pw.chromium.launch_persistent_context(
-        user_data_dir=str(user_data_dir),
+async def _get_ctx(profile_dir: str = "data/playwright-profiles/default",
+                   headless: bool = False) -> tuple[Playwright, BrowserContext]:
+    os.makedirs(profile_dir, exist_ok=True)
+    if profile_dir in _CTX:
+        return _CTX[profile_dir]
+    pw = await async_playwright().start()
+    ctx = await pw.chromium.launch_persistent_context(
+        user_data_dir=profile_dir,
         headless=headless,
-        accept_downloads=accept_downloads,
-        args=["--start-maximized"],
+        args=["--disable-dev-shm-usage", "--no-sandbox"],
+        accept_downloads=True,  # <<< important
     )
-    try:
-        yield ctx
-    finally:
-        try:
-            ctx.close()
-        except PWError:
-            pass
-        pw.stop()
+    _CTX[profile_dir] = (pw, ctx)
+    return pw, ctx
 
-def _new_page(ctx: BrowserContext) -> Page:
-    page = ctx.new_page()
-    page.set_default_navigation_timeout(60_000)
-    page.set_default_timeout(60_000)
-    return page
 
-# ---------------------------
-# Public helpers used by registry.py
-# ---------------------------
+def _safe_join(base_dir: str, name: str) -> str:
+    base = pathlib.Path(base_dir).resolve()
+    target = (base / name).resolve()
+    if not str(target).startswith(str(base)):
+        raise ValueError("path_traversal_blocked")
+    return str(target)
 
-def browser_nav(url: str, profile: str = "default", headless: bool = False, wait_until: str = "domcontentloaded") -> dict:
-    """
-    Open (or reuse) a persistent browser profile and navigate to URL.
-    """
-    with _ctx(profile=profile, headless=headless) as ctx:
-        page = _new_page(ctx)
-        page.goto(url, wait_until=wait_until)
-        ts = int(time.time() * 1000)
-        shot = SCREEN_DIR / f"{ts}-nav.png"
-        try:
-            page.screenshot(path=str(shot), full_page=True)
-        except Exception:
-            shot = None
-        return {"ok": True, "url": url, "screenshot": str(shot) if shot else None}
+def _allowed_ext(filename: str, allow: tuple[str, ...]) -> bool:
+    return pathlib.Path(filename).suffix.lower() in allow
 
-def browser_click(selector: str, profile: str = "default", headless: bool = False, wait_after: Optional[str] = "networkidle") -> dict:
-    """
-    Click an element by CSS/XPath/text selector on the current tab.
-    If no page is open in this profile, opens a blank one.
-    """
-    with _ctx(profile=profile, headless=headless) as ctx:
-        page = _new_page(ctx)
-        # If no page content loaded yet, just click won't work.
-        # Users should navigate first; we keep a no-op guard:
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=5_000)
-        except Exception:
-            pass
-        page.click(selector)
-        if wait_after:
-            try:
-                page.wait_for_load_state(wait_after, timeout=15_000)
-            except Exception:
-                pass
-        ts = int(time.time() * 1000)
-        shot = SCREEN_DIR / f"{ts}-click.png"
-        try:
-            page.screenshot(path=str(shot), full_page=True)
-        except Exception:
-            shot = None
-        return {"ok": True, "selector": selector, "screenshot": str(shot) if shot else None}
-
-def browser_type(selector: str, text: str, profile: str = "default", headless: bool = False, clear: bool = False) -> dict:
-    """
-    Type into an input/textarea matched by selector.
-    """
-    with _ctx(profile=profile, headless=headless) as ctx:
-        page = _new_page(ctx)
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=5_000)
-        except Exception:
-            pass
-        page.wait_for_selector(selector, timeout=10_000)
-        if clear:
-            page.fill(selector, "")
-        page.type(selector, text, delay=20)
-        ts = int(time.time() * 1000)
-        shot = SCREEN_DIR / f"{ts}-type.png"
-        try:
-            page.screenshot(path=str(shot), full_page=True)
-        except Exception:
-            shot = None
-        return {"ok": True, "selector": selector, "typed": len(text), "screenshot": str(shot) if shot else None}
-
-def browser_download(
+async def browser_download(
     url: Optional[str] = None,
-    selector: Optional[str] = None,
-    profile: str = "default",
+    click_selector: Optional[str] = None,
+    profile: str = "data/playwright-profiles/default",
+    download_dir: str = "data/downloads",
+    filename: Optional[str] = None,
+    timeout_ms: int = 120_000,
     headless: bool = False,
-    download_dir: Optional[str] = None,
-    wait_until: str = "domcontentloaded",
-) -> dict:
+    allowed_ext: tuple[str, ...] = (".zip", ".msi", ".exe", ".pdf", ".csv", ".xlsx", ".txt"),
+    allowed_domains: Optional[list[str]] = None,
+) -> Dict[str, Any]:
     """
-    Download a file either by:
-      A) directly visiting a URL that triggers a download, or
-      B) clicking a selector that triggers a download on the page.
-
-    Returns the saved file path.
+    Download a file either by visiting a direct URL or by clicking a selector that triggers a download.
+    Saves file to `download_dir` (created if needed) and returns metadata.
     """
-    out_dir = Path(download_dir) if download_dir else DOWNLOAD_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(download_dir, exist_ok=True)
+    _, ctx = await _get_ctx(profile, headless=headless)
+    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-    with _ctx(profile=profile, headless=headless, accept_downloads=True) as ctx:
-        page = _new_page(ctx)
-
-        # Option A: direct URL navigation triggers download
-        if url and selector is None:
-            with page.expect_download() as dl_info:
-                page.goto(url, wait_until=wait_until)
-            download = dl_info.value
-        else:
-            # Need a page first
+    async def _expect() -> Download:
+        async with page.expect_download(timeout=timeout_ms) as dl_info:
             if url:
-                page.goto(url, wait_until=wait_until)
-            page.wait_for_load_state("domcontentloaded")
-            if not selector:
-                raise ValueError("browser_download: provide either a direct download URL or a selector to click.")
-            page.wait_for_selector(selector, timeout=10_000)
-            with page.expect_download() as dl_info:
-                page.click(selector)
-            download = dl_info.value
+                # Optional domain guard
+                if allowed_domains:
+                    host = urlparse(url).hostname or ""
+                    if host and host not in allowed_domains:
+                        raise ValueError(f"domain_not_allowed: {host}")
+                await page.goto(url)
+            else:
+                if not click_selector:
+                    raise ValueError("provide url or click_selector")
+                await page.click(click_selector)
+        return await dl_info.value
 
-        suggested = download.suggested_filename
-        target = out_dir / suggested
-        download.save_as(str(target))
-        return {"ok": True, "path": str(target), "filename": suggested}
-    
+    dl: Download = await _expect()
 
-# --- Compatibility wrappers expected by tools.registry -----------------
-def browser_nav_with_profile(url: str, profile: str = "default", headless: bool = False, wait_until: str = "domcontentloaded") -> dict:
-    """
-    Back-compat: same as browser_nav but with explicit profile arg first.
-    """
-    return browser_nav(url=url, profile=profile, headless=headless, wait_until=wait_until)
+    # Suggested name and extension guard
+    suggested = await dl.suggested_filename()
+    final_name = filename or suggested
+    if not _allowed_ext(final_name, allowed_ext):
+        # try to infer extension from suggested name if custom name was provided without ext
+        if filename and _allowed_ext(suggested, allowed_ext):
+            final_name = suggested
+        else:
+            raise ValueError(f"extension_not_allowed: {pathlib.Path(final_name).suffix}")
 
-def browser_wait_ms(ms: int | float) -> dict:
-    """
-    Simple wait/sleep helper used by some scripted flows.
-    """
-    import time as _time
-    dur = max(0.0, float(ms) / 1000.0)
-    _time.sleep(dur)
-    return {"ok": True, "slept_ms": int(ms)}
+    target_path = _safe_join(download_dir, final_name)
 
+    # Save
+    await dl.save_as(target_path)
+    failure = await dl.failure()
+    if failure:
+        return {"ok": False, "error": f"download_failed: {failure}"}
+
+    # Metadata
+    size = os.path.getsize(target_path)
+    sha256 = ""
+    try:
+        h = hashlib.sha256()
+        with open(target_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        sha256 = h.hexdigest()
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "path": target_path,
+        "filename": os.path.basename(target_path),
+        "size_bytes": size,
+        "sha256": sha256,
+        "page_url": page.url,
+    }
+
+async def _get_ctx(profile_dir: str = "data/playwright-profiles/default",
+                   headless: bool = False) -> Tuple[Playwright, BrowserContext]:
+    os.makedirs(profile_dir, exist_ok=True)
+    if profile_dir in _CTX:
+        return _CTX[profile_dir]
+    pw = await async_playwright().start()
+    ctx = await pw.chromium.launch_persistent_context(
+        user_data_dir=profile_dir,
+        headless=headless,
+        args=["--disable-dev-shm-usage", "--no-sandbox"],
+    )
+    _CTX[profile_dir] = (pw, ctx)
+    return pw, ctx
+
+async def _get_page(ctx: BrowserContext) -> Page:
+    if ctx.pages:
+        return ctx.pages[0]
+    return await ctx.new_page()
+
+# ------------ Tools (async) ------------
+
+async def browser_nav(url: str,
+                      profile: str = "data/playwright-profiles/default",
+                      wait_until: str = "domcontentloaded",
+                      headless: bool = False,
+                      timeout_ms: int = 30000) -> Dict[str, Any]:
+    _, ctx = await _get_ctx(profile, headless=headless)
+    page = await _get_page(ctx)
+    await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+    title = await page.title()
+    return {"ok": True, "url": page.url, "title": title}
+
+async def browser_type(selector: str,
+                       text: str,
+                       profile: str = "data/playwright-profiles/default",
+                       clear: bool = False,
+                       press_enter: bool = False,
+                       type_delay_ms: int = 20) -> Dict[str, Any]:
+    _, ctx = await _get_ctx(profile)
+    page = await _get_page(ctx)
+    el = await page.wait_for_selector(selector, timeout=15000)
+    if clear:
+        await el.fill("")
+    await el.type(text, delay=type_delay_ms)
+    if press_enter:
+        await page.keyboard.press("Enter")
+    return {"ok": True}
+
+async def browser_click(selector: str,
+                        profile: str = "data/playwright-profiles/default",
+                        timeout_ms: int = 15000) -> Dict[str, Any]:
+    _, ctx = await _get_ctx(profile)
+    page = await _get_page(ctx)
+    await page.click(selector, timeout=timeout_ms)
+    return {"ok": True}
+
+async def browser_wait_ms(ms: int = 500) -> Dict[str, Any]:
+    await asyncio.sleep(max(ms, 0) / 1000.0)
+    return {"ok": True}
+
+async def browser_eval(js: str,
+                       profile: str = "data/playwright-profiles/default") -> Dict[str, Any]:
+    _, ctx = await _get_ctx(profile)
+    page = await _get_page(ctx)
+    result = await page.evaluate(js)
+    return {"ok": True, "result": result}

@@ -22,6 +22,38 @@ from .llm import LLM
 from .tools.registry import TOOL_REGISTRY
 from .policy import policy  # expanded guardrails loader you added
 
+from typing import Optional, Dict, Any
+from fastapi import HTTPException, Depends
+from pydantic import BaseModel
+
+class TaskRunCompat(BaseModel):
+    # any of these can carry your natural instruction
+    goal: Optional[str] = None
+    prompt: Optional[str] = None
+    text: Optional[str] = None
+    instruction: Optional[str] = None
+
+    dry_run: Optional[bool] = True
+    budget_rupees: Optional[int] = None
+    options: Optional[Dict[str, Any]] = None  # profile, max_steps, allowed_tools, blocked_tools, etc.
+
+def _normalize_goal(req: TaskRunCompat) -> str:
+    return (req.goal or req.prompt or req.text or req.instruction or "").strip()
+
+# tiny parser for inline hints in your natural sentence
+import re
+def _inline_hints(goal: str):
+    opts: Dict[str, Any] = {}
+    dry = None
+    m = re.search(r"profile\s*[:=]\s*([A-Za-z0-9_.\-]+)", goal, re.I)
+    if m: opts["profile"] = m.group(1)
+    m = re.search(r"max\s*steps\s*[:=]?\s*(\d{1,3})", goal, re.I)
+    if m: opts["max_steps"] = int(m.group(1))
+    if re.search(r"\bdry\s*run\s*off\b", goal, re.I): dry = False
+    if re.search(r"\bdry\s*run\s*on\b", goal, re.I):  dry = True
+    return dry, opts
+
+
 # --- Windows event loop policy (optional; remove if not needed) ---
 if sys.platform.startswith("win"):
     try:
@@ -100,27 +132,41 @@ class TaskRequest(BaseModel):
     options: Optional[Dict[str, Any]] = None  # profile/max_steps etc. from UI
 
 @app.post("/tasks/run")
-async def run_task(req: TaskRequest, llm: LLM = Depends(get_llm)):
+async def run_task(req: TaskRunCompat, llm: LLM = Depends(get_llm)):
     """
-    Simple agent loop that:
-      - bootstraps messages from the goal
-      - iteratively asks LLM for next tool call
-      - dispatches to TOOL_REGISTRY
-      - feeds observation back to LLM
-      - respects guardrails defaults for max steps & time budget
+    Natural-language agent loop:
+      - normalizes goal from goal/prompt/text/instruction
+      - parses inline hints (profile:, max steps, dry run on/off)
+      - LLM chooses tools; policy enforces limits/timeouts
     """
+    goal = _normalize_goal(req)
+    if not goal:
+        raise HTTPException(status_code=400, detail="missing goal/prompt/text/instruction")
+
+    # Merge inline hints into options
+    hinted_dry, hinted_opts = _inline_hints(goal)
+    options = dict(req.options or {})
+    options.update(hinted_opts)
+
     # Guardrail defaults
     defaults = policy.defaults() or {}
-    max_steps = int((req.options or {}).get("max_steps", defaults.get("max_total_steps", 40)))
+    max_steps = int(options.get("max_steps", defaults.get("max_total_steps", 40)))
     per_tool_runtime_sec = int(defaults.get("max_tool_runtime_sec", 120))
     overall_time_budget = max_steps * per_tool_runtime_sec
+
+    # Steering gates
+    allowed = set(options.get("allowed_tools", []))
+    blocked = set(options.get("blocked_tools", []))
+
+    # Dry run resolution (inline hint wins)
+    dry_run = hinted_dry if hinted_dry is not None else (True if req.dry_run is None else bool(req.dry_run))
 
     start_ts = time.time()
     steps: list[dict] = []
 
     # Bootstrap conversation/context per your LLM API
     try:
-        messages = llm.bootstrap(req.goal, req.dry_run, req.budget_rupees)
+        messages = llm.bootstrap(goal, dry_run, req.budget_rupees)
     except Exception as e:
         logger.exception("LLM bootstrap failed")
         return {"ok": False, "error": f"llm_bootstrap_failed: {e}"}
@@ -146,10 +192,20 @@ async def run_task(req: TaskRequest, llm: LLM = Depends(get_llm)):
         args = call.get("arguments", {}) or {}
         logger.info(f"[step {i+1}/{max_steps}] {tool_name}({args})")
 
-        # --- Optional terminal guard example ---
-        # If your policy has deny patterns / allow-lists, enforce here.
+        # Steering: allow/block lists
+        if allowed and tool_name not in allowed:
+            obs = {"ok": False, "error": f"tool_not_allowed_here: {tool_name}", "allowed": sorted(allowed)}
+            messages = llm.observe(messages, tool_name, args, obs)
+            steps.append({"tool": tool_name, "args": args, "obs": obs})
+            continue
+        if tool_name in blocked:
+            obs = {"ok": False, "error": f"tool_blocked_by_request: {tool_name}"}
+            messages = llm.observe(messages, tool_name, args, obs)
+            steps.append({"tool": tool_name, "args": args, "obs": obs})
+            continue
+
+        # Example terminal guard
         if tool_name in {"terminal_run", "shell.run"} and isinstance(args.get("cmd"), str):
-            # Example: reuse policy allow_exec for 'powershell' guard (tune as needed)
             try:
                 policy_ok, reason = policy.is_exec_allowed("powershell", [args["cmd"]])
                 if not policy_ok:
@@ -167,10 +223,8 @@ async def run_task(req: TaskRequest, llm: LLM = Depends(get_llm)):
         else:
             try:
                 if asyncio.iscoroutinefunction(tool):
-                    # per-call runtime soft-limit via wait_for
                     obs = await asyncio.wait_for(tool(**args), timeout=per_tool_runtime_sec)
                 else:
-                    # run sync tool in thread to avoid blocking
                     loop = asyncio.get_event_loop()
                     obs = await asyncio.wait_for(loop.run_in_executor(None, lambda: tool(**args)), timeout=per_tool_runtime_sec)
             except asyncio.TimeoutError:
@@ -195,12 +249,14 @@ async def run_task(req: TaskRequest, llm: LLM = Depends(get_llm)):
 
     return {
         "ok": True,
-        "goal": req.goal,
-        "dry_run": req.dry_run,
+        "goal": goal,  # normalized natural text
+        "dry_run": dry_run,
+        "options": options,
         "steps": steps,
         "used_max_steps": len(steps),
         "limits": {"max_steps": max_steps, "per_tool_runtime_sec": per_tool_runtime_sec},
     }
+
 
 # ------------------------- Diagnostics (optional) ------------------------
 test_router = FastAPI().router  # lightweight APIRouter
