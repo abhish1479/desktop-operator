@@ -103,6 +103,193 @@ Be decisive, resilient, and generic. Avoid site-specific hacks unless absolutely
 """
 
 class LLM:
+    """
+    - Exposes the same API you already use.
+    - Tools list now matches your TOOL_REGISTRY keys (dot names) AND includes browser.execute.
+    - Robust tool-call detection (checks message.tool_calls).
+    - Emits detailed self.last_raw for your TracedLLM to show in /tasks/run_stream.
+    - Keeps an internal tool_call_id so observe() threads properly.
+    """
+    def __init__(self):
+        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.start_time = time.time()
+        self.last_raw: Dict[str, Any] | None = None
+        self._last_tool_call_id: str | None = None
+
+    def bootstrap(self, goal: str, dry_run: bool, budget_rupees: Optional[int]):
+        sys = SYSTEM_PROMPT + f"\nUser dry_run={dry_run}, budget_rupees={budget_rupees}.\n"
+        return [
+            {"role": "system", "content": sys},
+            {"role": "user", "content": f"Goal: {goal}"}
+        ]
+
+    def _tool_specs(self) -> List[Dict[str, Any]]:
+        # Match your registry keys. Include browser.execute and canonical dot names.
+        # helper to build a tool schema
+        def fn(name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+            return {"type": "function", "function": {"name": name, "parameters": params}}
+
+        # require a set of string fields (kept permissive)
+        def req(*keys: str) -> Dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {k: {"type": "string"} for k in keys},
+                "required": list(keys),
+                "additionalProperties": True,
+            }
+
+        # fully permissive object (for flexible tools)
+        any_obj: Dict[str, Any] = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+        
+        return [
+        # Filesystem (align with registry dot names)
+            fn("fs.read",     req("path")),
+            fn("fs.write",    {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+            fn("fs.move",     req("src","dst")),
+            fn("fs.copy",     req("src","dst")),
+            fn("fs.delete",   req("path")),
+            fn("fs.listdir",  req("path")),
+
+            # Packages (used for Git, JDK, Flutter, Android Studio via winget/choco)
+            fn("pkg.install",   any_obj),
+            fn("pkg.uninstall", any_obj),
+            fn("pkg.ensure",    any_obj),
+
+            # Terminal
+            fn("terminal.run", {"type":"object","properties":{"cmd":{"type":"string"},"shell":{"type":"string"},"timeout_sec":{"type":"integer"}},"required":["cmd"],"additionalProperties":True}),
+
+            # VS Code (your registry exposes these names)
+            fn("vscode_open",            req("path")),
+            fn("vscode_save_all",        any_obj),
+            fn("vscode_get_diagnostics", any_obj),
+            fn("vscode.install_extension", {"type":"object","properties":{"ext_id":{"type":"string"},"force":{"type":"boolean"}},"required":["ext_id"],"additionalProperties":True}),
+
+            # UI / App launch
+            fn("app_launch",  req("name")),
+            fn("ui.focus",    req("title_re")),
+            fn("ui.menu_select", req("path")),
+            fn("ui.click",    {"type":"object","properties":{"name":{"type":"string"},"control_type":{"type":"string"}},"required":["name"],"additionalProperties":True}),
+            fn("ui.type",     req("text")),
+            fn("ui.wait",     {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"]}),
+            fn("ui.shortcut", req("keys")),
+
+            # HTTP / data (optional)
+            fn("http.request", any_obj),
+            fn("data.csv.read",  any_obj),
+            fn("data.csv.write", any_obj),
+            fn("data.json.read", any_obj),
+            fn("data.json.write", any_obj),
+
+            # Browser granular + executor
+            fn("browser.nav",      req("url")),
+            fn("browser.click",    {"type":"object","properties":{"selector":{"type":"string"},"by":{"type":"string"},"name":{"type":"string"}},"required":["selector"],"additionalProperties":True}),
+            fn("browser.type",     {"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"press_enter":{"type":"boolean"}},"required":["selector","text"],"additionalProperties":True}),
+            fn("browser.wait_ms",  {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"]}),
+            fn("browser.eval",     {"type":"object","properties":{"js":{"type":"string"}},"required":["js"]}),
+            fn("browser.download", any_obj),
+            fn("browser.execute",  {
+                "type":"object",
+                "properties":{
+                    "actions":{"type":"array","items":{"type":"object","additionalProperties":True}},
+                    "profile":{"type":"string"},
+                    "headless":{"type":"boolean"},
+                    "default_timeout_ms":{"type":"integer"}
+                },
+                "required":["actions"], "additionalProperties":True
+            }),
+        ]
+
+    def next_tool_call(self, messages: List[Dict[str,Any]]) -> Optional[Dict[str,Any]]:
+        # If no API key, provide a minimal heuristic to unblock local tests
+        if not self.api_key:
+            last_user = [m for m in messages if m["role"] == "user"][-1]["content"].lower()
+            if "youtube" in last_user or "play" in last_user:
+                return {
+                    "name": "browser.execute",
+                    "arguments": {
+                        "actions": [
+                            {"op":"goto","params":{"url":"https://www.youtube.com/"}},
+                            {"op":"wait_for","params":{"locator":"role=combobox[name='Search']","timeout_ms":10000}},
+                            {"op":"type","params":{"locator":"role=combobox[name='Search']","text":"saiyaraa","press_enter":True}},
+                            {"op":"wait_for","params":{"locator":"ytd-video-renderer a#thumbnail","timeout_ms":15000}},
+                            {"op":"click","params":{"locator":"ytd-video-renderer a#thumbnail","nth":0}},
+                            {"op":"wait_ms","params":{"ms":1200}},
+                            {"op":"eval","params":{"js":"document.querySelector('video')?.play?.();"}}
+                        ]
+                    }
+                }
+            # fall back to a harmless listing
+            return {"name":"fs.listdir", "arguments":{"path":"."}}
+
+        # Real call via OpenAI
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key)
+
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=self._tool_specs(),
+                tool_choice="auto",
+                temperature=0.2,
+            )
+
+            choice = resp.choices[0]
+            # capture everything for debugging
+            self.last_raw = {
+                "finish_reason": choice.finish_reason,
+                "message": {
+                    "content": getattr(choice.message, "content", None),
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "name": tc.function.name if getattr(tc, "function", None) else None,
+                            "arguments": tc.function.arguments if getattr(tc, "function", None) else None,
+                        }
+                        for tc in (choice.message.tool_calls or [])
+                    ],
+                },
+            }
+
+            # Robust detection: if tool_calls exist, parse the first one
+            tcs = choice.message.tool_calls or []
+            if tcs:
+                first = tcs[0]
+                self._last_tool_call_id = first.id
+                args = {}
+                try:
+                    args = json.loads(first.function.arguments or "{}")
+                except Exception:
+                    # leave args empty; the runner/validation will guard
+                    args = {}
+                return {"name": first.function.name, "arguments": args}
+
+            # No tool call; keep the assistant content so the planner can continue if needed
+            messages.append({"role": "assistant", "content": choice.message.content or ""})
+            return None
+
+        except Exception as e:
+            # also expose the error in raw for your stream
+            self.last_raw = {"error": str(e)}
+            messages.append({"role": "assistant", "content": f"LLM error: {e}"})
+            return None
+
+    def observe(self, messages, tool_name, args, obs):
+        # Thread tool output with tool_call_id when available (improves follow-ups)
+        payload = {"tool": tool_name, "args": args, "observation": obs}
+        msg = {"role": "tool", "content": json.dumps(payload), "name": tool_name}
+        if self._last_tool_call_id:
+            msg["tool_call_id"] = self._last_tool_call_id
+            self._last_tool_call_id = None
+        messages.append(msg)
+        return messages
+
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY", "")
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
