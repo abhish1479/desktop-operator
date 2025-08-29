@@ -1,6 +1,16 @@
 # apps/worker/browser.py
 from __future__ import annotations
 import os, asyncio, pathlib, hashlib
+import sys
+if sys.platform == "win32":
+    # Ensure proper event loop for Windows + Playwright
+    try:
+        import asyncio
+        if isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+    
 from typing import Tuple, Optional, Dict, Any
 from playwright.async_api import async_playwright, BrowserContext, Playwright, Page
 from playwright.async_api import async_playwright, BrowserContext, Playwright, Page

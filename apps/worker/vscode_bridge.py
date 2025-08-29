@@ -1,6 +1,8 @@
+# apps/worker/vscode_bridge.py - FIXED VERSION
 from __future__ import annotations
-import os, subprocess, shutil
+import os, subprocess, shutil, requests  # ✅ ADDED: requests import
 from typing import Dict, Any, List, Optional
+
 BRIDGE = os.getenv("VSCODE_BRIDGE_URL", "http://127.0.0.1:48100")
 
 def vscode_open(path: str, line: int | None = None) -> dict:
@@ -28,7 +30,6 @@ def vscode_get_diagnostics() -> dict:
         return {"ok": False, "status": r.status_code, "body": r.text}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
 
 def _find_code_cli() -> str:
     """

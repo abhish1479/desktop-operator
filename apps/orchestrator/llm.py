@@ -1,3 +1,4 @@
+import re
 import os, time, json
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
@@ -9,51 +10,49 @@ Always prefer robust, generic flows that will work across many sites/apps.
 Assume Windows. Persist browser sessions using a profile when needed.
 
 ## Tool Catalog (canonical names)
-- fs.write(path, content)
-- fs.move(src, dst)
-- fs.listdir(path)
+- fs_write(path, content)
+- fs_move(src, dst)
+- fs_listdir(path)
 
-- terminal.run(cmd, shell?="powershell", timeout_sec?=120)
+- terminal_run(cmd, shell?="powershell", timeout_sec?=120)
 
-- vscode.open(path, line?)
-- vscode.save_all()
-- vscode.get_diagnostics()
+- vscode_open(path, line?)
+- vscode_save_all()
+- vscode_get_diagnostics()
 
-- app.launch(name)   # prefer this over terminal for desktop apps
+- app_launch(name)   # prefer this over terminal for desktop apps
 
-- ui.focus(title_re)                           # focus a desktop window by title regex
-- ui.menu_select(path)                         # e.g., "File->Open"
-- ui.click(name, control_type)                 # e.g., ("OK", "Button")
-- ui.type(text)
+- ui_focus(title_re)                           # focus a desktop window by title regex
+- ui_menu_select(path)                         # e.g., "File->Open"
+- ui_click(name, control_type)                 # e.g., ("OK", "Button")
+- ui_type(text)
 
 ### Browser (async Playwright)
 Prefer the generic one-call executor for multi-step automation:
-- browser.execute(actions, profile?="default", headless?=False, default_timeout_ms?=30000)
+- browser_execute(actions, profile?="default", headless?=False, default_timeout_ms?=30000)
   Each action = { op, params }. Supported ops:
   - goto {url, wait_until?}
   - wait_ms {ms}
   - wait_for {locator, state?=visible, timeout_ms?}
   - click {locator, nth?, timeout_ms?}
   - type {locator, text, clear?=false, press_enter?=false, delay_ms?=20}
-  - press {keys}                         # e.g., "Enter", "Control+L"
-  - eval {js}                            # run JS and return value
+  - press {keys}
+  - eval {js}
   - scroll {to?='top'|'bottom'|, locator?|, x?|, y?}
   - screenshot {path?, full_page?=false, locator?}
-  - ensure_url {includes?|matches?}      # soft assertions
+  - ensure_url {includes?|matches?}
   - ensure_text {locator, includes}
   - download {url? | click_locator?, filename?, dir?="data/downloads",
              allowed_ext?=[".zip",".msi",".exe",".pdf",".csv",".xlsx",".txt"],
              allowed_domains?=[...]}
-Smart locators allowed: css=..., xpath=..., text=..., role=button[name='...'], id=..., data=..., aria=...
-For persistent login, include profile="default" (or another profile). Avoid site-specific selectors if a role/text works.
 
-Granular browser tools (use when a single action is enough):
-- browser.nav(url, profile?="default", wait_until?="domcontentloaded")
-- browser.type(selector, text, profile?="default", clear?=false, press_enter?=false, type_delay_ms?=20)
-- browser.click(selector, profile?="default", timeout_ms?=15000)
-- browser.wait_ms(ms)
-- browser.eval(js, profile?="default")
-- browser.download(url? | click_selector?, profile?="default", download_dir?="data/downloads", filename?, timeout_ms?=120000)
+Granular browser tools:
+- browser_nav(url, profile?="default", wait_until?="domcontentloaded")
+- browser_type(selector, text, profile?="default", clear?=false, press_enter?=false, type_delay_ms?=20)
+- browser_click(selector, profile?="default", timeout_ms?=15000)
+- browser_wait_ms(ms)
+- browser_eval(js, profile?="default")
+- browser_download(url? | click_selector?, profile?="default", download_dir?="data/downloads", filename?, timeout_ms?=120000)
 
 ## Rules & Safety
 - Secrets: If the user includes passwords/OTPs, **use them** but never echo or log them. In any text you produce, mask with "***".
@@ -69,16 +68,16 @@ Granular browser tools (use when a single action is enough):
 1) Confirm assumptions in one sentence if needed; if secrets are required, request them.
 2) Propose a **brief** plan (bullets). If risky/destructive, ask for approval.
 3) Execute:
-   - Prefer **browser.execute** with a compact list of actions for web automation (include profile if login/state is needed).
+   - Prefer **browser_execute** with a compact list of actions for web automation (include profile if login/state is needed).
    - Otherwise call granular tools or UI/app tools as appropriate.
-4) Verify outcome (ensure_url / ensure_text / fs.listdir / terminal.run --version, etc.).
+4) Verify outcome (ensure_url / ensure_text / fs_listdir / terminal_run --version, etc.).
 5) Return a concise result with key artifacts (paths, URLs, screenshots). If done, set stop=true.
 
 ## Output: Tool Calls
 When you need to act, emit a single JSON tool call like:
 {"name": "<tool_name>", "arguments": {...}}
-For browser.execute:
-{"name":"browser.execute","arguments":{
+For browser_execute:
+{"name":"browser_execute","arguments":{
   "profile":"default",
   "actions":[
     {"op":"goto","params":{"url":"https://www.youtube.com/"}},
@@ -102,35 +101,36 @@ For browser.execute:
 Be decisive, resilient, and generic. Avoid site-specific hacks unless absolutely necessary.
 """
 
+# Keep your SYSTEM_PROMPT exactly as you already have it above.
+
 class LLM:
-    """
-    - Exposes the same API you already use.
-    - Tools list now matches your TOOL_REGISTRY keys (dot names) AND includes browser.execute.
-    - Robust tool-call detection (checks message.tool_calls).
-    - Emits detailed self.last_raw for your TracedLLM to show in /tasks/run_stream.
-    - Keeps an internal tool_call_id so observe() threads properly.
-    """
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY", "")
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.start_time = time.time()
         self.last_raw: Dict[str, Any] | None = None
         self._last_tool_call_id: str | None = None
+        # Cost tracking
+        self.total_prompt_tokens: int = 0
+        self.total_completion_tokens: int = 0
+        self.total_tokens: int = 0
+        self.total_cost_usd: float = 0.0
+        self.total_cost_inr: float = 0.0
 
     def bootstrap(self, goal: str, dry_run: bool, budget_rupees: Optional[int]):
+        # Reset per-run state to avoid leaking tool_call IDs across runs
+        self._last_tool_call_id = None
+        self.last_raw = None
         sys = SYSTEM_PROMPT + f"\nUser dry_run={dry_run}, budget_rupees={budget_rupees}.\n"
         return [
             {"role": "system", "content": sys},
-            {"role": "user", "content": f"Goal: {goal}"}
+            {"role": "user", "content": f"Goal: {goal}"},
         ]
 
     def _tool_specs(self) -> List[Dict[str, Any]]:
-        # Match your registry keys. Include browser.execute and canonical dot names.
-        # helper to build a tool schema
         def fn(name: str, params: Dict[str, Any]) -> Dict[str, Any]:
             return {"type": "function", "function": {"name": name, "parameters": params}}
 
-        # require a set of string fields (kept permissive)
         def req(*keys: str) -> Dict[str, Any]:
             return {
                 "type": "object",
@@ -139,60 +139,61 @@ class LLM:
                 "additionalProperties": True,
             }
 
-        # fully permissive object (for flexible tools)
-        any_obj: Dict[str, Any] = {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        }
-        
+        any_obj: Dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": True}
+
         return [
-        # Filesystem (align with registry dot names)
-            fn("fs.read",     req("path")),
-            fn("fs.write",    {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
-            fn("fs.move",     req("src","dst")),
-            fn("fs.copy",     req("src","dst")),
-            fn("fs.delete",   req("path")),
-            fn("fs.listdir",  req("path")),
+            fn("fs_read",     req("path")),
+            fn("fs_write",    {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},
+                               "required":["path","content"], "additionalProperties":True}),
+            fn("fs_move",     req("src","dst")),
+            fn("fs_copy",     req("src","dst")),
+            fn("fs_delete",   req("path")),
+            fn("fs_listdir",  req("path")),
 
-            # Packages (used for Git, JDK, Flutter, Android Studio via winget/choco)
-            fn("pkg.install",   any_obj),
-            fn("pkg.uninstall", any_obj),
-            fn("pkg.ensure",    any_obj),
+            fn("pkg_install",   any_obj),
+            fn("pkg_uninstall", any_obj),
+            fn("pkg_ensure",    any_obj),
 
-            # Terminal
-            fn("terminal.run", {"type":"object","properties":{"cmd":{"type":"string"},"shell":{"type":"string"},"timeout_sec":{"type":"integer"}},"required":["cmd"],"additionalProperties":True}),
+            fn("terminal_run", {
+                "type":"object",
+                "properties":{"cmd":{"type":"string"},"shell":{"type":"string"},"timeout_sec":{"type":"integer"}},
+                "required":["cmd"], "additionalProperties": True
+            }),
 
-            # VS Code (your registry exposes these names)
             fn("vscode_open",            req("path")),
             fn("vscode_save_all",        any_obj),
             fn("vscode_get_diagnostics", any_obj),
-            fn("vscode.install_extension", {"type":"object","properties":{"ext_id":{"type":"string"},"force":{"type":"boolean"}},"required":["ext_id"],"additionalProperties":True}),
+            fn("vscode_install_extension", {
+                "type":"object","properties":{"ext_id":{"type":"string"},"force":{"type":"boolean"}},
+                "required":["ext_id"], "additionalProperties": True
+            }),
 
-            # UI / App launch
-            fn("app_launch",  req("name")),
-            fn("ui.focus",    req("title_re")),
-            fn("ui.menu_select", req("path")),
-            fn("ui.click",    {"type":"object","properties":{"name":{"type":"string"},"control_type":{"type":"string"}},"required":["name"],"additionalProperties":True}),
-            fn("ui.type",     req("text")),
-            fn("ui.wait",     {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"]}),
-            fn("ui.shortcut", req("keys")),
+            fn("app_launch",     req("name")),
+            fn("ui_focus",       req("title_re")),
+            fn("ui_menu_select", req("path")),
+            fn("ui_click", {
+                "type":"object","properties":{"name":{"type":"string"},"control_type":{"type":"string"}},
+                "required":["name"], "additionalProperties": True
+            }),
+            fn("ui_type",        req("text")),
+            fn("ui_wait",        {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"],"additionalProperties":True}),
+            fn("ui_shortcut",    req("keys")),
 
-            # HTTP / data (optional)
-            fn("http.request", any_obj),
-            fn("data.csv.read",  any_obj),
-            fn("data.csv.write", any_obj),
-            fn("data.json.read", any_obj),
-            fn("data.json.write", any_obj),
+            fn("http_request", any_obj),
+            fn("data_csv_read",  any_obj),
+            fn("data_csv_write", any_obj),
+            fn("data_json_read", any_obj),
+            fn("data_json_write", any_obj),
 
-            # Browser granular + executor
-            fn("browser.nav",      req("url")),
-            fn("browser.click",    {"type":"object","properties":{"selector":{"type":"string"},"by":{"type":"string"},"name":{"type":"string"}},"required":["selector"],"additionalProperties":True}),
-            fn("browser.type",     {"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"press_enter":{"type":"boolean"}},"required":["selector","text"],"additionalProperties":True}),
-            fn("browser.wait_ms",  {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"]}),
-            fn("browser.eval",     {"type":"object","properties":{"js":{"type":"string"}},"required":["js"]}),
-            fn("browser.download", any_obj),
-            fn("browser.execute",  {
+            fn("browser_nav",      req("url")),
+            fn("browser_click",    {"type":"object","properties":{"selector":{"type":"string"},"by":{"type":"string"},"name":{"type":"string"}},
+                                    "required":["selector"], "additionalProperties":True}),
+            fn("browser_type",     {"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"press_enter":{"type":"boolean"}},
+                                    "required":["selector","text"], "additionalProperties":True}),
+            fn("browser_wait_ms",  {"type":"object","properties":{"ms":{"type":"integer"}},"required":["ms"],"additionalProperties":True}),
+            fn("browser_eval",     {"type":"object","properties":{"js":{"type":"string"}},"required":["js"],"additionalProperties":True}),
+            fn("browser_download", any_obj),
+            fn("browser_execute",  {
                 "type":"object",
                 "properties":{
                     "actions":{"type":"array","items":{"type":"object","additionalProperties":True}},
@@ -200,16 +201,50 @@ class LLM:
                     "headless":{"type":"boolean"},
                     "default_timeout_ms":{"type":"integer"}
                 },
-                "required":["actions"], "additionalProperties":True
+                "required":["actions"], "additionalProperties": True
             }),
+
+            # WhatsApp Desktop chat tools (permissive schema to allow future args)
+            fn("whatsapp_desktop_chat", any_obj),
+            fn("whatsapp_send",         any_obj),
         ]
 
+    # -------------- Tool-call Parsing Helpers --------------
+    def _extract_tool_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Rescue path: if the model printed a tool call as JSON in the assistant text.
+        We try to find a JSON object with "name" and "arguments".
+        """
+        if not text:
+            return None
+        # Strip fences ```json ... ```
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+                    return {"name": obj["name"], "arguments": obj.get("arguments") or {}}
+            except Exception:
+                pass
+        # Fallback: first { ... } blob
+        m = re.search(r"(\{.*\})", text, flags=re.S)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+                    return {"name": obj["name"], "arguments": obj.get("arguments") or {}}
+            except Exception:
+                pass
+        return None
+
+    # ----------------- Next Tool Call -----------------
     def next_tool_call(self, messages: List[Dict[str,Any]]) -> Optional[Dict[str,Any]]:
-        # If no API key, provide a minimal heuristic to unblock local tests
+        # ---- Stub mode (no API key) ----
         if not self.api_key:
-            last_user = [m for m in messages if m["role"] == "user"][-1]["content"].lower()
-            if "youtube" in last_user or "play" in last_user:
-                return {
+            goal = [m for m in messages if m["role"] == "user"][-1]["content"].lower()
+            call: Dict[str, Any]
+            if ("youtube" in goal) or ("play " in goal):
+                call = {
                     "name": "browser.execute",
                     "arguments": {
                         "actions": [
@@ -223,10 +258,15 @@ class LLM:
                         ]
                     }
                 }
-            # fall back to a harmless listing
-            return {"name":"fs.listdir", "arguments":{"path":"."}}
+            elif ("flutter" in goal) or ("create project" in goal):
+                call = {"name":"terminal.run","arguments":{"cmd":"flutter --version","shell":"powershell","timeout_sec":180}}
+            else:
+                call = {"name":"fs.listdir","arguments":{"path":"."}}
+            # record for streaming debug
+            self.last_raw = {"path": "stub", "reason": "no_api_key", "emitted_call": call, "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "cost_usd": 0.0, "cost_inr": 0.0}
+            return call
 
-        # Real call via OpenAI
+        # ---- Real API call ----
         try:
             from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
@@ -239,113 +279,96 @@ class LLM:
                 temperature=0.2,
             )
 
+            # Token usage and cost estimation
+            usage = getattr(resp, "usage", None)
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+            total_tokens = getattr(usage, "total_tokens", 0) if usage else (prompt_tokens + completion_tokens)
+            self.total_prompt_tokens += prompt_tokens
+            self.total_completion_tokens += completion_tokens
+            self.total_tokens += total_tokens
+            # Cost calculation (if env prices provided)
+            try:
+                in_price = float(os.getenv("OPENAI_PRICE_INPUT_PER_1K", "0"))
+                out_price = float(os.getenv("OPENAI_PRICE_OUTPUT_PER_1K", "0"))
+                usd_to_inr = float(os.getenv("USD_TO_INR", "83.0"))
+            except Exception:
+                in_price = out_price = 0.0
+                usd_to_inr = 83.0
+            cost_usd = (prompt_tokens / 1000.0) * in_price + (completion_tokens / 1000.0) * out_price
+            cost_inr = cost_usd * usd_to_inr
+            self.total_cost_usd += cost_usd
+            self.total_cost_inr += cost_inr
+
             choice = resp.choices[0]
-            # capture everything for debugging
+            msg = getattr(choice, "message", None)
+
+            # capture everything for live debug
+            tool_calls = []
+            if msg and getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    tool_calls.append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "name": getattr(tc.function, "name", None) if getattr(tc, "function", None) else None,
+                        "arguments": getattr(tc.function, "arguments", None) if getattr(tc, "function", None) else None,
+                    })
+
             self.last_raw = {
                 "finish_reason": choice.finish_reason,
-                "message": {
-                    "content": getattr(choice.message, "content", None),
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "name": tc.function.name if getattr(tc, "function", None) else None,
-                            "arguments": tc.function.arguments if getattr(tc, "function", None) else None,
-                        }
-                        for tc in (choice.message.tool_calls or [])
-                    ],
+                "message_content": getattr(msg, "content", None),
+                "tool_calls": tool_calls,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "cost_usd": round(cost_usd, 6),
+                    "cost_inr": round(cost_inr, 2),
+                    "total_cost_usd": round(self.total_cost_usd, 6),
+                    "total_cost_inr": round(self.total_cost_inr, 2),
                 },
             }
 
-            # Robust detection: if tool_calls exist, parse the first one
-            tcs = choice.message.tool_calls or []
-            if tcs:
-                first = tcs[0]
-                self._last_tool_call_id = first.id
+            # Prefer tool_calls if present
+            if tool_calls:
+                first = tool_calls[0]
+                self._last_tool_call_id = first.get("id")
                 args = {}
                 try:
-                    args = json.loads(first.function.arguments or "{}")
+                    args = json.loads(first.get("arguments") or "{}")
                 except Exception:
-                    # leave args empty; the runner/validation will guard
                     args = {}
-                return {"name": first.function.name, "arguments": args}
+                return {"name": first.get("name"), "arguments": args}
 
-            # No tool call; keep the assistant content so the planner can continue if needed
-            messages.append({"role": "assistant", "content": choice.message.content or ""})
+            # Try to rescue a tool call from assistant text
+            assistant_text = getattr(msg, "content", None)
+            rescued = self._extract_tool_from_text(assistant_text or "")
+            if rescued:
+                return rescued
+
+            # No tool call; append assistant text so the planner can iterate
+            messages.append({"role": "assistant", "content": assistant_text or ""})
             return None
 
         except Exception as e:
-            # also expose the error in raw for your stream
+            # Surface the exception to your stream
             self.last_raw = {"error": str(e)}
             messages.append({"role": "assistant", "content": f"LLM error: {e}"})
             return None
 
+    # ----------------- Observe -----------------
     def observe(self, messages, tool_name, args, obs):
-        # Thread tool output with tool_call_id when available (improves follow-ups)
         payload = {"tool": tool_name, "args": args, "observation": obs}
-        msg = {"role": "tool", "content": json.dumps(payload), "name": tool_name}
+        # Only send a tool message when responding to a prior tool_call
         if self._last_tool_call_id:
-            msg["tool_call_id"] = self._last_tool_call_id
+            msg = {"role": "tool", "content": json.dumps(payload), "name": tool_name, "tool_call_id": self._last_tool_call_id}
             self._last_tool_call_id = None
-        messages.append(msg)
-        return messages
-
-    def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.start_time = time.time()
-
-    def bootstrap(self, goal: str, dry_run: bool, budget_rupees: Optional[int]):
-        sys = SYSTEM_PROMPT + f"\nUser dry_run={dry_run}, budget_rupees={budget_rupees}.\n"
-        return [
-            {"role":"system","content": sys},
-            {"role":"user","content": f"Goal: {goal}"}
-        ]
-
-    def next_tool_call(self, messages: List[Dict[str,Any]]) -> Optional[Dict[str,Any]]:
-        # If no API key, simple stub planner
-        if not self.api_key:
-            last_user = [m for m in messages if m["role"]=="user"][-1]["content"].lower()
-            if "organize" in last_user and "download" in last_user:
-                return {"name":"fs_listdir", "arguments":{"path":"C:/Users/you/Downloads"}}
-            return None
-
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=self.api_key)
-            tools = [
-                {"type": "function", "function": {"name": "fs_write", "parameters": {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
-                {"type": "function", "function": {"name": "fs_move", "parameters": {"type":"object","properties":{"src":{"type":"string"},"dst":{"type":"string"}},"required":["src","dst"]}}},
-                {"type": "function", "function": {"name": "fs_listdir", "parameters": {"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
-                {"type": "function", "function": {"name": "terminal_run", "parameters": {"type":"object","properties":{"cmd":{"type":"string"},"shell":{"type":"string"},"timeout_sec":{"type":"integer"}},"required":["cmd"]}}},
-                {"type": "function", "function": {"name": "vscode_open", "parameters": {"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"}}}}},
-                {"type": "function", "function": {"name": "vscode_save_all", "parameters": {"type":"object","properties":{}}}},
-                {"type": "function", "function": {"name": "vscode_get_diagnostics", "parameters": {"type":"object","properties":{}}}},
-                {"type": "function", "function": {"name": "browser_nav", "parameters": {"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}},
-                {"type": "function", "function": {"name": "browser_click", "parameters": {"type":"object","properties":{"selector":{"type":"string"},"by":{"type":"string"},"name":{"type":"string"}},"required":["selector"]}}},
-                {"type": "function", "function": {"name": "browser_type", "parameters": {"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"press_enter":{"type":"boolean"}},"required":["selector","text"]}}},
-                {"type": "function", "function": {"name": "browser_download", "parameters": {"type":"object","properties":{"selector":{"type":"string"},"to_dir":{"type":"string"}},"required":["selector","to_dir"]}}},
-            ]
-
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.2,
-            )
-            choice = resp.choices[0]
-            if choice.finish_reason == "tool_calls":
-                call = choice.message.tool_calls[0]
-                return {"name": call.function.name, "arguments": json.loads(call.function.arguments or "{}")}
-            else:
-                messages.append({"role":"assistant","content": choice.message.content or ""})
-                return None
-        except Exception as e:
-            messages.append({"role":"assistant","content": f"LLM error: {e}"})
-            return None
-
-    def observe(self, messages, tool_name, args, obs):
-        payload = {"tool": tool_name, "args": args, "observation": obs}
-        messages.append({"role":"tool","content": json.dumps(payload), "name": tool_name})
+            messages.append(msg)
+        else:
+            # No tool_call to respond to; provide a short assistant summary instead
+            try:
+                snippet = json.dumps(obs, ensure_ascii=False)
+            except Exception:
+                snippet = str(obs)
+            messages.append({"role": "assistant", "content": f"Observation: {snippet[:2000]}"})
         return messages

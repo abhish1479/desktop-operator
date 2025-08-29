@@ -12,6 +12,7 @@ opencv-python==4.10.0.84
 pytesseract==0.3.13
 Pillow==10.4.0
 pywinauto==0.6.8; platform_system == "Windows"
+uiautomation==2.0.19; platform_system == "Windows"
 
 # Browser automation
 playwright==1.46.0
@@ -21,3 +22,4 @@ jsonschema==4.25.1
 keyring==25.6.0
 pyperclip==1.9.0
 pytest==8.4.0
+selenium==4.35.0
